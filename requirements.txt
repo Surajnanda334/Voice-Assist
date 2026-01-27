@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-dotenv
+motor
+requests
+edge-tts
+pyttsx3
+soundfile
+numpy
+addict
+huggingface_hub
+# kittentts==0.1.0  # Requires onnxruntime (not yet available for Python 3.14)
+# https://github.com/KittenML/KittenTTS/releases/download/0.1/kittentts-0.1.0-py3-none-any.whl
