@@ -1,5 +1,17 @@
 @echo off
 echo Starting Voice Assistant...
+
+:: Read LLM_PROVIDER from .env
+set "LLM_PROVIDER=ollama"
+if exist .env (
+    for /f "usebackq tokens=1* delims==" %%a in (`type .env ^| findstr /b "LLM_PROVIDER="`) do (
+        set "LLM_PROVIDER=%%b"
+    )
+)
+
+:: Trim whitespace just in case
+set "LLM_PROVIDER=%LLM_PROVIDER: =%"
+
 if exist ".venv\Scripts\activate.bat" (
     call .venv\Scripts\activate.bat
 ) else (
@@ -9,8 +21,12 @@ if exist ".venv\Scripts\activate.bat" (
 echo Opening Frontend...
 start "" "frontend.html"
 
-echo Starting Ollama...
-start "Ollama Server" cmd /c "ollama serve"
+if /i "%LLM_PROVIDER%"=="groq" (
+    echo LLM Provider is Groq. Skipping Ollama startup.
+) else (
+    echo Starting Ollama...
+    start "Ollama Server" cmd /c "ollama serve"
+)
 
 echo Starting Backend...
 python backend.py

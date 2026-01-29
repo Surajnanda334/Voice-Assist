@@ -1,63 +1,47 @@
 import os
-import io
-import time
 import json
-import wave
-import base64
 import asyncio
-import subprocess
-import requests
+import base64
 import re
-import numpy as np
-import tempfile
-from pathlib import Path
+import time
+from typing import AsyncGenerator, List, Dict, Optional
+from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import AsyncGenerator, Optional
 
-# Third-party imports
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, APIRouter
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.concurrency import run_in_threadpool
-from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
-
-# Optional imports (handle if missing)
-try:
-    import ollama
-except ImportError:
-    ollama = None
-    print("Warning: 'ollama' package not installed. LLM features will fail.")
-
-try:
-    import edge_tts
-except ImportError:
-    edge_tts = None
-    print("Warning: 'edge_tts' package not installed. EdgeTTS will fail.")
-
-try:
-    import pyttsx3
-except ImportError:
-    pyttsx3 = None
-    print("Warning: 'pyttsx3' package not installed. Offline TTS will fail.")
+import httpx
+import ollama
+import edge_tts
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
-# Configuration
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
-DB_NAME = os.getenv("MONGO_DB_NAME", "voice_assist_db")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY") # Default key from previous file
+# --- Configuration ---
+class Settings:
+    def __init__(self):
+        self.LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
+        self.GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+        self.GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
+        self.SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+        self.MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+        self.DB_NAME = os.getenv("MONGO_DB_NAME", "voice_assist_db")
+
+settings = Settings()
 
 # --- Database Service ---
+from motor.motor_asyncio import AsyncIOMotorClient
+
 class DatabaseService:
     client: AsyncIOMotorClient = None
     db = None
 
     def connect(self):
         try:
-            self.client = AsyncIOMotorClient(MONGO_URI)
-            self.db = self.client[DB_NAME]
-            print(f"Connected to MongoDB at {MONGO_URI}")
+            self.client = AsyncIOMotorClient(settings.MONGO_URI)
+            self.db = self.client[settings.DB_NAME]
+            print(f"Connected to MongoDB at {settings.MONGO_URI}")
         except Exception as e:
             print(f"Failed to connect to MongoDB: {e}")
 
@@ -67,20 +51,16 @@ class DatabaseService:
             print("MongoDB connection closed")
 
     async def log_conversation(self, query: str, response: str, route: str, search_query: str = None):
-        if self.db is None:
-            return
-        
-        document = {
-            "timestamp": datetime.now(),
-            "query": query,
-            "response": response,
-            "route": route,
-            "search_query": search_query
-        }
-        
+        if self.db is None: return
         try:
+            document = {
+                "timestamp": datetime.now(),
+                "query": query,
+                "response": response,
+                "route": route,
+                "search_query": search_query
+            }
             await self.db.conversations.insert_one(document)
-            print("Conversation logged to MongoDB")
         except Exception as e:
             print(f"Error logging to MongoDB: {e}")
 
@@ -89,366 +69,195 @@ db_service = DatabaseService()
 # --- Search Service ---
 class SearchService:
     def __init__(self):
-        self.api_key = SERPER_API_KEY
+        self.api_key = settings.SERPER_API_KEY
         self.url = "https://google.serper.dev/search"
 
-    def search(self, query: str):
+    async def search(self, query: str):
+        if not self.api_key: return "Error: SERPER_API_KEY not found."
+        
+        headers = {'X-API-KEY': self.api_key, 'Content-Type': 'application/json'}
+        payload = json.dumps({"q": query})
+        
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.url, headers=headers, data=payload)
+                if response.status_code == 200:
+                    results = response.json()
+                    snippets = []
+                    if "organic" in results:
+                        for item in results["organic"][:3]:
+                            snippets.append(f"{item.get('title')}: {item.get('snippet')}")
+                    return "\n".join(snippets) if snippets else "No results found."
+                else:
+                    return f"Search Error: {response.status_code}"
+        except Exception as e:
+            return f"Search Exception: {e}"
+
+search_service = SearchService()
+
+# --- Language Manager ---
+class LanguageManager:
+    def __init__(self, config_path="voice_config.json"):
+        self.config_path = config_path
+        self.languages = {}
+        self.default_language = "en-US"
+        self.load_config()
+
+    def load_config(self):
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    self.languages = json.load(f)
+                print(f"LanguageManager: Loaded {len(self.languages)} languages.")
+            else:
+                print("LanguageManager: Config file not found, using defaults.")
+                self.languages = {
+                    "en-US": {"name": "English (US)", "code": "en-US", "tts_voice": "en-US-AriaNeural"}
+                }
+        except Exception as e:
+            print(f"LanguageManager Error: {e}")
+
+    def get_voice(self, lang_code: str):
+        lang = self.languages.get(lang_code)
+        if lang: return lang.get("tts_voice")
+        # Fallback to English if not found
+        return self.languages.get("en-US", {}).get("tts_voice", "en-US-AriaNeural")
+
+language_manager = LanguageManager()
+
+# --- LLM Backend Abstraction ---
+class LLMBackend(ABC):
+    @abstractmethod
+    async def generate(self, messages: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
+        pass
+
+class OllamaBackend(LLMBackend):
+    def __init__(self, model: str = "llama3"):
+        self.model = model
+
+    async def generate(self, messages: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
+        try:
+            async for chunk in await ollama.AsyncClient().chat(model=self.model, messages=messages, stream=True):
+                if 'message' in chunk and 'content' in chunk['message']:
+                    yield chunk['message']['content']
+        except Exception as e:
+            yield f"Ollama Error: {e}"
+
+class GroqBackend(LLMBackend):
+    def __init__(self, api_key: str, model: str):
+        self.api_key = api_key
+        self.model = model
+        self.url = "https://api.groq.com/openai/v1/chat/completions"
+
+    async def generate(self, messages: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
         if not self.api_key:
-            return "Error: SERPER_API_KEY not found."
-            
-        payload = json.dumps({
-            "q": query,
-            "num": 3 # Fetch top 3 results
-        })
+            yield "Error: GROQ_API_KEY not found."
+            return
+
         headers = {
-            'X-API-KEY': self.api_key,
-            'Content-Type': 'application/json'
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "temperature": 0.7,
+            "max_completion_tokens": 4096
         }
 
         try:
-            search_start = time.time()
-            print(f"[{search_start:.3f}] Serper Search Start: {query}")
-            response = requests.request("POST", self.url, headers=headers, data=payload)
-            response.raise_for_status()
-            data = response.json()
-            
-            search_duration = time.time() - search_start
-            print(f"[{time.time():.3f}] Serper Search Complete. Time taken: {search_duration:.4f}s")
-            
-            # Parse results to be LLM-friendly
-            snippets = []
-            if "organic" in data:
-                for result in data["organic"]:
-                    title = result.get("title", "")
-                    snippet = result.get("snippet", "")
-                    snippets.append(f"- {title}: {snippet}")
-            
-            if "knowledgeGraph" in data:
-                kg = data["knowledgeGraph"]
-                title = kg.get("title", "")
-                desc = kg.get("description", "")
-                snippets.insert(0, f"Knowledge Graph: {title} - {desc}")
-                
-            return "\n".join(snippets)
-            
+            async with httpx.AsyncClient() as client:
+                async with client.stream("POST", self.url, headers=headers, json=payload, timeout=60.0) as response:
+                    if response.status_code != 200:
+                        error_body = ""
+                        async for chunk in response.aiter_bytes(): error_body += chunk.decode()
+                        yield f"Groq Error {response.status_code}: {error_body}"
+                        return
+
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]": break
+                            try:
+                                data = json.loads(data_str)
+                                if "choices" in data and len(data["choices"]) > 0:
+                                    content = data["choices"][0].get("delta", {}).get("content", "")
+                                    if content: yield content
+                            except json.JSONDecodeError: pass
         except Exception as e:
-            print(f"Serper Search Error: {e}")
-            return f"Error performing search: {e}"
-
-# --- Orchestrator Service ---
-class OrchestratorService:
-    def __init__(self, model: str = "llama3"):
-        self.model = model
-        print(f"Orchestrator Service Initialized with model: {self.model}")
-        self.system_prompt = f"""
-You are an Orchestrator Agent.
-Your responsibility is to decide whether a user query should be answered by:
-1) a LOCAL LLM (LLaMA-3 – fast but outdated), or
-2) SERPER (web search – real-time, up-to-date data).
-
-Current Date: {datetime.now().strftime('%Y-%m-%d')}
-Model Knowledge Cutoff: ~2023
-
-You must NOT answer the user directly.
-You must ONLY decide the routing.
-
-────────────────────────
-ROUTING RULES (STRICT)
-────────────────────────
-
-Route to SERPER if the query involves:
-- "Who is..." questions about living people (Politicians, CEOs, Celebrities)
-- Current Government Officials (President, Prime Minister, Kings, etc.)
-- Recent History (Events after 2022)
-- Current affairs, news, or weather
-- Company, startup, or product updates
-- Stock prices, revenue, valuation
-- Sports results or schedules
-- Prices, rankings, trends
-- "Latest", "Current", "Today", "Now", "Recently"
-
-Route to LOCAL_LLM if the query involves:
-- Logic, reasoning, or explanations
-- Math or calculations
-- Programming, debugging, or system design
-- Algorithms, data structures
-- Definitions or timeless concepts (e.g., "What is democracy?")
-- Fictional or hypothetical content
-- Personal advice
-- General knowledge that clearly hasn't changed in 10 years
-
-────────────────────────
-DECISION HEURISTIC
-────────────────────────
-Ask yourself: "Is it POSSIBLE that the answer has changed since 2023?"
-If YES → SERPER
-If NO → LOCAL_LLM
-
-────────────────────────
-OUTPUT FORMAT (MANDATORY)
-────────────────────────
-Return ONLY valid JSON.
-{{
-  "route": "LOCAL_LLM" | "SERPER",
-  "reason": "short justification",
-  "serper_query": "search query OR null"
-}}
-"""
-
-    def _check_heuristics(self, query: str) -> dict | None:
-        """
-        Fast regex-based routing to skip LLM latency for obvious cases.
-        """
-        query_lower = query.lower()
-        
-        # 1. Obvious Search Triggers
-        search_patterns = [
-            r"\b(who|what) (is|was|are) the (current|present|latest|new)",
-            r"\b(who|what) (is|was) (president|prime minister|ceo|cto|cfo)",
-            r"\b(weather|temperature|forecast)",
-            r"\b(news|headline|update)",
-            r"\b(stock|price|market|valuation)",
-            r"\b(when) (is|was|did) (the)",
-            r"\b(latest|recent|today|now)",
-            r"\b(schedule|score|result|winner)",
-            r"\bwho is \w+",  # "Who is X?" almost always needs search for people
-        ]
-        
-        for pattern in search_patterns:
-            if re.search(pattern, query_lower):
-                print(f"Orchestrator Heuristic Match: SERPER ({pattern})")
-                return {
-                    "route": "SERPER",
-                    "reason": "Heuristic match for real-time info",
-                    "serper_query": query
-                }
-        
-        # 2. Obvious Local Triggers (Code, Math, Definitions, Chitchat)
-        local_patterns = [
-            r"\b(write|create|generate|fix|debug) (code|function|script|program|app)",
-            r"\b(in python|in js|in typescript|in java|in c\+\+)",
-            r"\b(solve|calculate|compute|math)",
-            r"\b(explain|define|meaning of) (concept|term|word)",
-            r"\b(tell me a joke|write a poem|write a story)",
-            r"\b(hello|hi|hey|greetings|good morning|good afternoon|good evening)",
-            r"\b(thank you|thanks|cool|okay|ok|great|awesome)",
-            r"\b(how are you|what's up|how is it going)",
-            r"\b(who are you|what are you)",
-            r"\b(summarize|paraphrase|rewrite)",
-        ]
-        
-        for pattern in local_patterns:
-            if re.search(pattern, query_lower):
-                print(f"Orchestrator Heuristic Match: LOCAL_LLM ({pattern})")
-                return {
-                    "route": "LOCAL_LLM",
-                    "reason": "Heuristic match for creative/timeless task",
-                    "serper_query": None
-                }
-                
-        return None
-
-    def route_query(self, query: str) -> dict:
-        try:
-            print(f"\n--- ORCHESTRATOR LOGS ---")
-            print(f"Input Query: {query}")
-            
-            # 1. Fast Heuristic Check
-            heuristic_decision = self._check_heuristics(query)
-            if heuristic_decision:
-                print(f"Fast Path Decision: {heuristic_decision}")
-                print(f"-------------------------\n")
-                return heuristic_decision
-            
-            # 2. Slow LLM Check
-            llm_start = time.time()
-            print(f"[{llm_start:.3f}] Orchestrator LLM Routing Check Start...")
-            
-            if not ollama:
-                return {"route": "LOCAL_LLM", "reason": "Ollama not installed", "serper_query": None}
-
-            response = ollama.chat(
-                model=self.model,
-                messages=[
-                    {'role': 'system', 'content': self.system_prompt},
-                    {'role': 'user', 'content': query}
-                ],
-                stream=False,
-                format='json', # Force JSON mode
-                keep_alive='5m'
-            )
-            
-            llm_duration = time.time() - llm_start
-            content = response['message']['content'].strip()
-            print(f"[{time.time():.3f}] Orchestrator LLM Response ({llm_duration:.3f}s): {content}")
-            
-            decision = json.loads(content)
-            print(f"Parsed Decision: {decision}")
-            print(f"-------------------------\n")
-            
-            return decision
-            
-        except Exception as e:
-            print(f"Orchestrator Error: {e}")
-            print(f"-------------------------\n")
-            # Fallback to LOCAL_LLM on error
-            return {"route": "LOCAL_LLM", "reason": f"Orchestrator failed: {e}", "serper_query": None}
+            yield f"Groq Connection Error: {e}"
 
 # --- LLM Service ---
 class LLMService:
-    def __init__(self, model: str = "llama3"):
-        self.model = model
+    def __init__(self):
+        self.provider = settings.LLM_PROVIDER
+        self.backend = self._get_backend()
         self.system_prompt = (
-            "You are a helpful, concise voice assistant. "
-            "Provide clear, direct answers in 30-50 words. "
-            f"Current Date: {datetime.now().strftime('%Y-%m-%d')}. "
-            "IMPORTANT: You may receive 'Context from Web Search'. "
-            "If this context is provided, you MUST use it as the source of truth, "
-            "even if it contradicts your internal training data. "
-            "Never say 'As of my knowledge cutoff' if you have search context. "
-            "Do NOT read out long disclaimers. Be conversational."
+            "You are a smart, adaptable voice assistant. "
+            "TONE ADAPTATION: Match the user's tone. If they speak formally, be formal. "
+            "If they use casual slang like 'bhai', 'yar', 'bro', 'mate', 'dude', 'amigo', 'hermano', be warm, witty, and use similar casual language. "
+            "LANGUAGE DETECTION: The user might speak 'Hinglish' (Hindi written in English script), 'Spanglish' (Spanish mixed with English), 'Franglais' (French mixed with English), or other hybrid languages. "
+            "Example: 'Mujah Bhuk Lagi' -> 'Mujhe Bhuk Lagi'. "
+            "'Tengo hambre, bro' -> stay in Spanglish. "
+            "'J'ai faim, mate' -> stay in Franglais. "
+            "If you detect any hybrid language, reply in the SAME mixed language. "
+            "Do NOT switch to pure English if the user is speaking a hybrid language. "
+            "CONTEXT: If the user asks about food/hunger in a casual way (e.g. 'kya khau', 'qué como', 'qu'est-ce que je mange'), suggest culturally relevant comfort food (e.g. 'Aloo Paratha', 'Biryani', 'tacos', 'croissant') with a friendly tone. "
+            "Answer questions directly. No fluff. "
+            f"Current Date: {datetime.now().strftime('%Y-%m-%d')}."
         )
-        print(f"LLM Service Initialized with model: {self.model}")
 
-    async def generate_response(self, prompt: str, history: list = None) -> AsyncGenerator[str, None]:
-        if not ollama:
-             yield "Error: Ollama not installed."
-             return
+    def _get_backend(self) -> LLMBackend:
+        if self.provider == "groq":
+            print(f"Initializing LLM Backend: Groq ({settings.GROQ_MODEL})")
+            return GroqBackend(settings.GROQ_API_KEY, settings.GROQ_MODEL)
+        else:
+            print(f"Initializing LLM Backend: Ollama (llama3)")
+            return OllamaBackend("llama3")
 
-        try:
-            start_time = time.time()
-            print(f"[{start_time:.3f}] LLM Request Start: {prompt[:50]}...")
-
-            # Enforce brevity in the user prompt as well for better adherence
-            full_prompt = f"{prompt} (Answer concisely in 30-50 words)"
-            
-            messages = [{'role': 'system', 'content': self.system_prompt}]
-            if history:
-                # Add history to context
-                messages.extend(history)
-            
-            messages.append({'role': 'user', 'content': full_prompt})
-            
-            # Use 'keep_alive' to keep the model loaded in memory for subsequent requests
-            stream = ollama.chat(
-                model=self.model,
-                messages=messages,
-                stream=True,
-                keep_alive='5m' 
+    async def generate_response(self, prompt: str, history: list = None, user_profile: str = "", language: str = "en-US") -> AsyncGenerator[str, None]:
+        current_system = self.system_prompt
+        
+        # Language Instruction - Allow overrides for Hinglish
+        if language == "en-US":
+            current_system += (
+                "\nNOTE: Default language is English. "
+                "BUT if the user input looks like Hindi/Hinglish, IGNORE the default. "
+                "Instead, reply in Hindi/Hinglish and START your response with '~hi~'. "
+                "Example: '~hi~ Aloo Paratha kha le bhai.' "
+                "If replying in English, do NOT add any tag."
             )
-            
-            first_token_time = None
-            token_count = 0
-            
-            for chunk in stream:
-                if first_token_time is None:
-                    first_token_time = time.time()
-                    print(f"[{first_token_time:.3f}] LLM First Token received (Latency: {first_token_time - start_time:.3f}s)")
-                
-                if 'message' in chunk and 'content' in chunk['message']:
-                    token = chunk['message']['content']
-                    token_count += 1
-                    yield token
-            
-            end_time = time.time()
-            print(f"[{end_time:.3f}] LLM Request Complete. Total Time: {end_time - start_time:.3f}s, Tokens: {token_count}")
-            
-        except Exception as e:
-            print(f"LLM Error: {e}")
-            yield f"Error generating response: {e}"
+        else:
+            current_system += f"\nIMPORTANT: Reply in {language}."
+        
+        if user_profile:
+            current_system += f"\n\nUSER KNOWLEDGE GRAPH:\n{user_profile}"
+        
+        messages = [{'role': 'system', 'content': current_system}]
+        if history: messages.extend(history)
+        messages.append({'role': 'user', 'content': prompt})
+        
+        async for token in self.backend.generate(messages):
+            yield token
+
+llm_service = LLMService()
 
 # --- TTS Service ---
 class TTSService:
-    def __init__(self):
-        self.use_edge_tts = True if edge_tts else False
-        self.use_pyttsx3 = True if pyttsx3 else False
-        
-        # Try loading KittenTTS
-        self.kitten_model = None
+    async def speak(self, text: str, language_code: str = "en-US") -> Optional[bytes]:
+        voice = language_manager.get_voice(language_code)
         try:
-            from kittentts import KittenTTS
-            # Initialize with default model
-            self.kitten_model = KittenTTS("KittenML/kitten-tts-nano-0.1")
-            print("KittenTTS initialized successfully.")
+            communicate = edge_tts.Communicate(text, voice)
+            audio_data = b""
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    audio_data += chunk["data"]
+            return audio_data
         except Exception as e:
-            print(f"KittenTTS initialization failed (using fallback): {e}")
+            print(f"TTS Error ({voice}): {e}")
+            return None
 
-    async def speak(self, text: str) -> bytes:
-        # 1. Try KittenTTS
-        if self.kitten_model:
-            try:
-                print(f"Generating TTS with KittenTTS: {text[:30]}...")
-                kitten_start = time.time()
-                # Run in threadpool because it might be blocking
-                audio = await run_in_threadpool(self.kitten_model.generate, text, voice='expr-voice-2-f')
-                
-                # Convert float32 numpy array to int16 WAV bytes
-                import io
-                import soundfile as sf
-                
-                with io.BytesIO() as wav_buffer:
-                    # KittenTTS usually returns float32 at 24000Hz (or model specific)
-                    # We write it as WAV so the browser can decode it easily
-                    sf.write(wav_buffer, audio, 24000, format='WAV')
-                    wav_buffer.seek(0)
-                    data = wav_buffer.read()
-                    print(f"KittenTTS generation took: {time.time() - kitten_start:.4f}s")
-                    return data
-                    
-            except Exception as e:
-                print(f"KittenTTS error: {e}")
-                # Fallthrough to next provider
-        
-        # 2. Try Edge TTS (Online, High Quality)
-        if self.use_edge_tts:
-            try:
-                edge_start = time.time()
-                communicate = edge_tts.Communicate(text, "en-US-AriaNeural")
-                audio_data = b""
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        audio_data += chunk["data"]
-                print(f"EdgeTTS generation took: {time.time() - edge_start:.4f}s")
-                return audio_data
-            except Exception as e:
-                print(f"EdgeTTS failed: {e}")
-
-        # 3. Fallback to pyttsx3 (Offline, Low Quality)
-        if self.use_pyttsx3:
-            try:
-                pyttsx3_start = time.time()
-                data = await run_in_threadpool(self._pyttsx3_gen, text)
-                print(f"pyttsx3 generation took: {time.time() - pyttsx3_start:.4f}s")
-                return data
-            except Exception as e:
-                print(f"pyttsx3 failed: {e}")
-            
-        print("CRITICAL: All TTS services failed to generate audio.")
-        return b""
-
-    def _pyttsx3_gen(self, text):
-        engine = pyttsx3.init()
-        # Save to temp file because getting bytes directly is hard
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            temp_path = f.name
-        
-        engine.save_to_file(text, temp_path)
-        engine.runAndWait()
-        
-        with open(temp_path, "rb") as f:
-            data = f.read()
-            
-        try:
-            os.remove(temp_path)
-        except:
-            pass
-        return data
-
-# Initialize Services
-db_service.connect()
-search_service = SearchService()
-orchestrator_service = OrchestratorService()
-llm_service = LLMService()
 tts_service = TTSService()
 
 # --- FastAPI App ---
@@ -462,136 +271,115 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    db_service.connect()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    db_service.close()
+
+@app.get("/languages")
+async def get_languages():
+    return language_manager.languages
+
+async def process_audio_stream(queue: asyncio.Queue, websocket: WebSocket):
+    while True:
+        item = await queue.get()
+        if item is None: break
+        
+        text, lang = item
+        if not text.strip(): continue
+
+        try:
+            audio_bytes = await tts_service.speak(text, lang)
+            if audio_bytes:
+                audio_b64 = base64.b64encode(audio_bytes).decode('utf-8')
+                await websocket.send_text(json.dumps({"type": "audio", "data": audio_b64}))
+        except Exception as e:
+            print(f"Streaming TTS Error: {e}")
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    print("Client connected")
+    tts_queue = asyncio.Queue()
+    tts_task = asyncio.create_task(process_audio_stream(tts_queue, websocket))
     
-    # Session state
-    history = [] 
-    current_task: asyncio.Task = None
-
-    async def process_interaction(user_text: str):
-        try:
-            query_received_time = time.time()
-            print(f"\n==================================================")
-            print(f"[{query_received_time:.3f}] User Query Received: {user_text}")
-            
-            # 1. Orchestrate
-            route_decision = orchestrator_service.route_query(user_text)
-            route = route_decision["route"]
-            
-            context = ""
-            if route == "SERPER":
-                await websocket.send_json({"type": "status", "message": "Searching web..."})
-                search_q = route_decision.get("serper_query") or user_text
-                context = search_service.search(search_q)
-                prompt = f"Context from Web Search:\n{context}\n\nUser Query: {user_text}"
-            else:
-                prompt = user_text
-            
-            # 2. Generate Response
-            await websocket.send_json({"type": "status", "message": "Thinking..."})
-            
-            full_response = ""
-            sentence_buffer = ""
-            
-            # Use history in LLM generation
-            async for token in llm_service.generate_response(prompt, history):
-                full_response += token
-                sentence_buffer += token
-                
-                # Stream token to UI
-                await websocket.send_json({"type": "llm_token", "text": token})
-                
-                # TTS Streaming
-                if token in [".", "!", "?", "\n"] and len(sentence_buffer) > 10:
-                    await websocket.send_json({"type": "status", "message": "Speaking..."})
-                    audio_bytes = await tts_service.speak(sentence_buffer)
-                    if audio_bytes:
-                        b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-                        await websocket.send_json({"type": "audio", "data": b64_audio})
-                    sentence_buffer = ""
-            
-            # Process remaining buffer
-            if sentence_buffer.strip():
-                audio_bytes = await tts_service.speak(sentence_buffer)
-                if audio_bytes:
-                    b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-                    await websocket.send_json({"type": "audio", "data": b64_audio})
-            
-            # Update history (keep last 10 turns)
-            history.append({"role": "user", "content": user_text})
-            history.append({"role": "assistant", "content": full_response})
-            if len(history) > 20: 
-                history.pop(0)
-                history.pop(0)
-
-            # Log to DB
-            await db_service.log_conversation(user_text, full_response, route, route_decision.get("serper_query"))
-            
-            await websocket.send_json({"type": "response_complete"})
-        
-        except asyncio.CancelledError:
-            print(f"Task cancelled for query: {user_text}")
-            raise
-        except Exception as e:
-            print(f"Error in process_interaction: {e}")
-            await websocket.send_json({"type": "error", "message": str(e)})
-
     try:
         while True:
             data = await websocket.receive_text()
             try:
                 message = json.loads(data)
-            except json.JSONDecodeError:
-                continue
+            except json.JSONDecodeError: continue
+            
+            if message.get("type") == "query":
+                prompt = message.get("text", "")
+                language = message.get("language", "en-US")
                 
-            msg_type = message.get("type")
-
-            if msg_type == "query":
-                # HARD AUDIO OWNERSHIP RULE (Backend Verification)
-                if message.get("source") != "user":
-                    print(f"SECURITY: Rejected input from non-user source: {message.get('source')}")
-                    continue
-
-                user_text = message.get("text", "").strip()
-                if not user_text:
-                    continue
+                if not prompt: continue
                 
-                # Cancel previous task if running (Barge-in support)
-                if current_task and not current_task.done():
-                    print(f"Barge-in: Cancelling previous task for new query: {user_text}")
-                    current_task.cancel()
-                    try:
-                        await current_task
-                    except asyncio.CancelledError:
-                        pass
+                full_response = ""
+                sentence_buffer = ""
+                detected_output_language = language
+                checking_language_tag = True
+                tag_buffer = ""
                 
-                current_task = asyncio.create_task(process_interaction(user_text))
+                await websocket.send_text(json.dumps({"type": "status", "message": "Thinking..."}))
 
-            elif msg_type == "stop":
-                # Explicit stop (e.g., from frontend barge-in)
-                if current_task and not current_task.done():
-                    print("Stop received. Cancelling current task.")
-                    current_task.cancel()
-                    try:
-                        await current_task
-                    except asyncio.CancelledError:
-                        pass
+                async for token in llm_service.generate_response(prompt, language=language):
+                    # Dynamic Language Detection
+                    if checking_language_tag:
+                        tag_buffer += token
+                        if len(tag_buffer) > 10:
+                            checking_language_tag = False
+                            if "~hi~" in tag_buffer:
+                                detected_output_language = "hi-IN"
+                                print("Detected Hindi (~hi~)")
+                                full_response += tag_buffer.replace("~hi~", "")
+                                sentence_buffer += tag_buffer.replace("~hi~", "")
+                            else:
+                                full_response += tag_buffer
+                                sentence_buffer += tag_buffer
+                        else:
+                            continue
+                    else:
+                        full_response += token
+                        sentence_buffer += token
+                    
+                    await websocket.send_text(json.dumps({"type": "llm_token", "text": token}))
+                    
+                    # Sentence splitting for TTS
+                    sentences = re.split(r'(?<=[.!?])\s+', sentence_buffer)
+                    if len(sentences) > 1:
+                        for s in sentences[:-1]:
+                            if s.strip():
+                                await tts_queue.put((s, detected_output_language))
+                        sentence_buffer = sentences[-1]
 
-            elif msg_type == "reset_context":
-                history = []
-                print("Context reset.")
+                # Flush remaining
+                if checking_language_tag and tag_buffer:
+                    if "~hi~" in tag_buffer:
+                        detected_output_language = "hi-IN"
+                        tag_buffer = tag_buffer.replace("~hi~", "")
+                    full_response += tag_buffer
+                    sentence_buffer += tag_buffer
                 
+                if sentence_buffer.strip():
+                    await tts_queue.put((sentence_buffer, detected_output_language))
+                
+                await websocket.send_text(json.dumps({"type": "response_complete"}))
+                
+                # Log conversation (simplified)
+                await db_service.log_conversation(prompt, full_response, settings.LLM_PROVIDER)
+
     except WebSocketDisconnect:
         print("Client disconnected")
-        if current_task and not current_task.done():
-            current_task.cancel()
     except Exception as e:
         print(f"WebSocket Error: {e}")
+    finally:
+        await tts_queue.put(None)
+        await tts_task
 
 if __name__ == "__main__":
     import uvicorn
-    # Use 0.0.0.0 to allow external access if needed, but localhost is fine
     uvicorn.run(app, host="0.0.0.0", port=8000)
