@@ -1,0 +1,61 @@
+{
+  "default_language": "en-US",
+  "languages": {
+    "en-US": {
+      "name": "English (US)",
+      "code": "en-US",
+      "tts_voice": "en-US-AriaNeural",
+      "stt_code": "en-US"
+    },
+    "en-GB": {
+      "name": "English (UK)",
+      "code": "en-GB",
+      "tts_voice": "en-GB-SoniaNeural",
+      "stt_code": "en-GB"
+    },
+    "hi-IN": {
+      "name": "Hindi",
+      "code": "hi-IN",
+      "tts_voice": "hi-IN-SwaraNeural",
+      "stt_code": "hi-IN"
+    },
+    "es-ES": {
+      "name": "Spanish",
+      "code": "es-ES",
+      "tts_voice": "es-ES-ElviraNeural",
+      "stt_code": "es-ES"
+    },
+    "fr-FR": {
+      "name": "French",
+      "code": "fr-FR",
+      "tts_voice": "fr-FR-DeniseNeural",
+      "stt_code": "fr-FR"
+    },
+    "de-DE": {
+      "name": "German",
+      "code": "de-DE",
+      "tts_voice": "de-DE-KatjaNeural",
+      "stt_code": "de-DE"
+    },
+    "it-IT": {
+      "name": "Italian",
+      "code": "it-IT",
+      "tts_voice": "it-IT-ElsaNeural",
+      "stt_code": "it-IT"
+    },
+    "ja-JP": {
+      "name": "Japanese",
+      "code": "ja-JP",
+      "tts_voice": "ja-JP-NanamiNeural",
+      "stt_code": "ja-JP"
+    },
+    "zh-CN": {
+      "name": "Chinese (Simplified)",
+      "code": "zh-CN",
+      "tts_voice": "zh-CN-XiaoxiaoNeural",
+      "stt_code": "zh-CN"
+    }
+  },
+  "stt_provider": "web_speech",
+  "tts_provider": "edge_tts"
+}
