@@ -145,12 +145,6 @@
                     <span class="slider"></span>
                 </label>
             </div>
-            
-            <div class="language-selector">
-                <select id="languageSelect" onchange="changeLanguage()">
-                    <option value="en-US">English (US)</option>
-                </select>
-            </div>
         </div>
 
         <div class="chat-box" id="chatBox">
@@ -158,7 +152,6 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
         // Configuration
         const WS_URL = "ws://localhost:8000/ws";
@@ -168,46 +161,6 @@
         let audioContext = null;
         let recognition = null;
         let isRecording = false; // "Mic Active" flag (HW level)
-        let currentLanguage = "en-US";
-
-        function changeLanguage() {
-            const select = document.getElementById('languageSelect');
-            currentLanguage = select.value;
-            console.log("Language changed to:", currentLanguage);
-            
-            // Update recognition if active
-            if (recognition) {
-                recognition.lang = currentLanguage;
-                // If recording, stop so it restarts with new lang (if in ambient mode or manual restart needed)
-                if (isRecording) {
-                    recognition.stop();
-                }
-            }
-        }
-
-        // Fetch Languages
-        async function fetchLanguages() {
-            try {
-                // Use absolute URL since we are likely not serving from the same origin/port
-                const response = await fetch('http://localhost:8000/languages');
-                const languages = await response.json();
-                const select = document.getElementById('languageSelect');
-                select.innerHTML = ''; // Clear defaults
-                
-                // Handle Dict response from backend
-                for (const [code, lang] of Object.entries(languages)) {
-                    const option = document.createElement('option');
-                    option.value = code;
-                    option.textContent = lang.name || code;
-                    if (code === currentLanguage) option.selected = true;
-                    select.appendChild(option);
-                }
-            } catch (e) {
-                console.error("Failed to fetch languages", e);
-            }
-        }
-
-        fetchLanguages();
 
         // 1. CONVERSATION STATE MACHINE
         const AppState = {
@@ -375,8 +328,26 @@
 
         // --- STT Logic (Web Speech API) ---
 
-        function initializeSpeechRecognition() {
-            if (recognition) return;
+        function startRecording() {
+            if (isRecording) return;
+            
+            ensureAudioContext();
+            
+            transitionTo(AppState.LISTENING);
+        }
+
+        function stopRecording() {
+            if (!isRecording) return;
+            transitionTo(AppState.IDLE);
+        }
+
+        function startMic() {
+            if (isRecording) return;
+            
+            // Clean up old recognition if exists
+            if (recognition) {
+                try { recognition.abort(); } catch(e) {}
+            }
 
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
             recognition = new SpeechRecognition();
@@ -386,16 +357,15 @@
 
             recognition.onstart = () => {
                 isRecording = true;
-                console.log("Mic started");
+                // Don't update UI here, State Machine handles it
             };
 
             recognition.onend = () => {
                 isRecording = false;
-                console.log("Mic stopped");
                 // Auto-restart if in Ambient Mode and supposed to be LISTENING
                 if (isAmbientMode && (currentState === AppState.LISTENING || currentState === AppState.SPEAKING)) {
                     console.log("Mic stopped, restarting for Ambient Mode...");
-                    try { recognition.start(); } catch(e) { console.error("Restart failed:", e); }
+                    startMic(); 
                 } else if (currentState === AppState.LISTENING && !isAmbientMode) {
                      // If manual mode, go back to IDLE
                      transitionTo(AppState.IDLE);
@@ -420,6 +390,9 @@
                          const detectedText = (finalTranscript + interimTranscript).trim();
                          
                          // 6. FAIL-SAFE / ECHO CHECK
+                         // Simple heuristic: if it matches what we just said, ignore it.
+                         // But for stricter safety: 
+                         // Check if detected text is subset of lastAgentResponse
                          if (isEcho(detectedText)) {
                              console.log(`Ignored Echo: "${detectedText}"`);
                              return; // DROP INPUT
@@ -445,31 +418,13 @@
                         lastAgentResponse = ""; 
                         
                         sendText(finalTranscript);
+                        // In One-Shot mode, we stop after one command.
+                        // In Ambient, we keep going (state machine handles it).
                     }
                 }
             };
-        }
 
-        function startRecording() {
-            if (isRecording) return;
-            ensureAudioContext();
-            transitionTo(AppState.LISTENING);
-        }
-
-        function stopRecording() {
-            if (!isRecording) return;
-            transitionTo(AppState.IDLE);
-        }
-
-        function startMic() {
-            if (isRecording) return;
-            if (!recognition) initializeSpeechRecognition();
-            
-            try { 
-                recognition.start(); 
-            } catch(e) {
-                console.log("Mic start error (probably already started):", e);
-            }
+            recognition.start();
         }
 
         function stopMic() {
@@ -540,7 +495,6 @@
                 ws.send(JSON.stringify({ 
                     type: "query", 
                     text: text,
-                    language: currentLanguage,
                     source: "user" // 2. HARD AUDIO OWNERSHIP RULE
                 }));
             }
@@ -622,7 +576,6 @@
         
         let currentPartialDiv = null;
         let currentAssistantDiv = null;
-        let currentAssistantMarkdown = "";
 
         function updatePartialUserMessage(text) {
             if (!text.trim()) return;
@@ -654,7 +607,6 @@
             currentAssistantDiv = document.createElement('div');
             currentAssistantDiv.className = 'message assistant-message';
             chatBox.appendChild(currentAssistantDiv);
-            currentAssistantMarkdown = "";
         }
 
         function appendAssistantToken(token) {
@@ -662,11 +614,8 @@
                 currentAssistantDiv = document.createElement('div');
                 currentAssistantDiv.className = 'message assistant-message';
                 chatBox.appendChild(currentAssistantDiv);
-                currentAssistantMarkdown = "";
             }
-            currentAssistantMarkdown += token;
-            // Render Markdown
-            currentAssistantDiv.innerHTML = marked.parse(currentAssistantMarkdown);
+            currentAssistantDiv.textContent += token;
             scrollToBottom();
         }
 

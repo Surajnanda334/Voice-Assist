@@ -9,8 +9,5 @@ soundfile
 numpy
 addict
 huggingface_hub
-neo4j
-ollama
-httpx
-vosk
-# kittentts==0.1.0  # Requires onnxruntime
+# kittentts==0.1.0  # Requires onnxruntime (not yet available for Python 3.14)
+# https://github.com/KittenML/KittenTTS/releases/download/0.1/kittentts-0.1.0-py3-none-any.whl

@@ -53,12 +53,3 @@ A fully local, voice-controlled AI assistant using:
      ```
 
 3. Open `http://localhost:5173` in your browser.
-
-
-4. Future improvements:
-   - Persistent Long-Term Personalized Memory via Knowledge Graph✅
-   - Expressive Emotional TTS with Dynamic Prosody Control
-   - Advanced Agentic Multi-Step Task Execution
-   - Language Understanding and Interpretation
-   - Have laptop context aware of all application all files search for files for application and open them
-   - Super tonic tts vs soprano TTS 
