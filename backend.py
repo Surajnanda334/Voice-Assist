@@ -46,7 +46,7 @@ load_dotenv()
 # Configuration
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
 DB_NAME = os.getenv("MONGO_DB_NAME", "voice_assist_db")
-SERPER_API_KEY = os.getenv("SERPER_API_KEY", "ec28e27c6b7a7c9f33ae3da17f0891190aac8092") # Default key from previous file
+SERPER_API_KEY = os.getenv("SERPER_API_KEY") # Default key from previous file
 
 # --- Database Service ---
 class DatabaseService:
