@@ -16,15 +16,15 @@ import ollama
 import edge_tts
 
 # Load environment variables
-load_dotenv(override=True)
+load_dotenv(override=False)
 
 # --- Configuration ---
 class Settings:
     def __init__(self):
         self.LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
-        self.GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-        self.GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
-        self.SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+        self.GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+        self.GROQ_MODEL = os.getenv("GROQ_MODEL")
+        self.SERPER_API_KEY = os.getenv("SERPER_API_KEY")
         self.MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
         self.DB_NAME = os.getenv("MONGO_DB_NAME", "voice_assist_db")
 
@@ -335,18 +335,17 @@ async def websocket_endpoint(websocket: WebSocket):
                             if "~hi~" in tag_buffer:
                                 detected_output_language = "hi-IN"
                                 print("Detected Hindi (~hi~)")
-                                full_response += tag_buffer.replace("~hi~", "")
-                                sentence_buffer += tag_buffer.replace("~hi~", "")
-                            else:
-                                full_response += tag_buffer
-                                sentence_buffer += tag_buffer
+                                tag_buffer = tag_buffer.replace("~hi~", "")
+                            
+                            full_response += tag_buffer
+                            sentence_buffer += tag_buffer
+                            await websocket.send_text(json.dumps({"type": "llm_token", "text": tag_buffer}))
                         else:
                             continue
                     else:
                         full_response += token
                         sentence_buffer += token
-                    
-                    await websocket.send_text(json.dumps({"type": "llm_token", "text": token}))
+                        await websocket.send_text(json.dumps({"type": "llm_token", "text": token}))
                     
                     # Sentence splitting for TTS
                     sentences = re.split(r'(?<=[.!?])\s+', sentence_buffer)
