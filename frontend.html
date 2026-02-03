@@ -138,6 +138,10 @@
             <button id="startBtn" onclick="startRecording()">Start Recording</button>
             <button id="stopBtn" onclick="stopRecording()" disabled>Stop Recording</button>
             
+            <select id="languageSelect" class="language-select" onchange="handleLanguageChange()">
+                <option value="en-US">English (US)</option>
+            </select>
+
             <div class="switch-container">
                 <span class="switch-label">Ambient Mode</span>
                 <label class="switch">
@@ -208,6 +212,42 @@
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const ambientToggle = document.getElementById('ambientToggle');
+        const languageSelect = document.getElementById('languageSelect');
+
+        // Language Management
+        async function loadLanguages() {
+            try {
+                const response = await fetch('http://localhost:8000/languages');
+                const languages = await response.json();
+                
+                languageSelect.innerHTML = '';
+                let defaultLang = 'en-US';
+                
+                // Prioritize en-IN for Hinglish users if available, else en-US
+                if (languages['en-IN']) defaultLang = 'en-IN';
+                
+                for (const [key, lang] of Object.entries(languages)) {
+                    const option = document.createElement('option');
+                    option.value = lang.code;
+                    option.textContent = lang.name;
+                    if (lang.code === defaultLang) option.selected = true;
+                    languageSelect.appendChild(option);
+                }
+            } catch (e) {
+                console.error("Failed to load languages:", e);
+            }
+        }
+
+        function handleLanguageChange() {
+            console.log("Language changed to:", languageSelect.value);
+            // If currently recording, restart to apply new language
+            if (isRecording) {
+                stopMic();
+                startMic();
+            }
+        }
+
+        loadLanguages();
 
         // State Management
         function transitionTo(newState) {
@@ -353,7 +393,7 @@
             recognition = new SpeechRecognition();
             recognition.continuous = true; // Ambient Requirement
             recognition.interimResults = true;
-            recognition.lang = 'en-US';
+            recognition.lang = languageSelect.value || 'en-US';
 
             recognition.onstart = () => {
                 isRecording = true;
@@ -495,6 +535,7 @@
                 ws.send(JSON.stringify({ 
                     type: "query", 
                     text: text,
+                    language: languageSelect.value || 'en-US',
                     source: "user" // 2. HARD AUDIO OWNERSHIP RULE
                 }));
             }
