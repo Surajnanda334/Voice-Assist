@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    container_name: voice_assist_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017
+      - MONGO_DB_NAME=voice_assist_db
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_MODEL=${GROQ_MODEL}
+      - SERPER_API_KEY=${SERPER_API_KEY}
+      - STT_PROVIDER=${STT_PROVIDER:-vosk}
+      # If using Ollama running in the other container:
+      - OLLAMA_HOST=http://ollama:11434
+    depends_on:
+      - mongo
+      # - ollama # Uncomment if running local Ollama
+    volumes:
+      - ./voice_config.json:/app/voice_config.json
+      # Mount model folders if using local STT models
+      # - ./model:/app/model 
+      # - ./whisper.cpp:/app/whisper.cpp
+
+  mongo:
+    image: mongo:latest
+    container_name: voice_assist_mongo
+    restart: always
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  # Optional: Local LLM Service
+  # ollama:
+  #   image: ollama/ollama
+  #   container_name: voice_assist_ollama
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ollama_data:/root/.ollama
+
+volumes:
+  mongo_data:
+  ollama_data:
