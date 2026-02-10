@@ -280,6 +280,27 @@
     </style>
 </head>
 <body>
+    <div class="container">
+        <h1>Voice Assistant</h1>
+        
+        <div class="status" id="status">Ready</div>
+        
+        <div class="controls">
+            <button id="startBtn" onclick="startRecording()">Start Recording</button>
+            <button id="stopBtn" onclick="stopRecording()" disabled>Stop Recording</button>
+            
+            <select id="languageSelect" class="language-select" onchange="handleLanguageChange()">
+                <option value="en-US">English (US)</option>
+            </select>
+
+            <div class="switch-container">
+                <span class="switch-label">Ambient Mode</span>
+                <label class="switch">
+                    <input type="checkbox" id="ambientToggle" onchange="toggleAmbientMode()">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
 
     <div class="status-text" id="status">Ready</div>
 
@@ -379,7 +400,50 @@
             }
         }
 
-        // --- State Management ---
+        // UI Elements
+        const statusEl = document.getElementById('status');
+        const chatBox = document.getElementById('chatBox');
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const ambientToggle = document.getElementById('ambientToggle');
+        const languageSelect = document.getElementById('languageSelect');
+
+        // Language Management
+        async function loadLanguages() {
+            try {
+                const response = await fetch('http://localhost:8000/languages');
+                const languages = await response.json();
+                
+                languageSelect.innerHTML = '';
+                let defaultLang = 'en-US';
+                
+                // Prioritize en-IN for Hinglish users if available, else en-US
+                if (languages['en-IN']) defaultLang = 'en-IN';
+                
+                for (const [key, lang] of Object.entries(languages)) {
+                    const option = document.createElement('option');
+                    option.value = lang.code;
+                    option.textContent = lang.name;
+                    if (lang.code === defaultLang) option.selected = true;
+                    languageSelect.appendChild(option);
+                }
+            } catch (e) {
+                console.error("Failed to load languages:", e);
+            }
+        }
+
+        function handleLanguageChange() {
+            console.log("Language changed to:", languageSelect.value);
+            // If currently recording, restart to apply new language
+            if (isRecording) {
+                stopMic();
+                startMic();
+            }
+        }
+
+        loadLanguages();
+
+        // State Management
         function transitionTo(newState) {
             console.log(`State Transition: ${currentState} -> ${newState}`);
             currentState = newState;
@@ -545,20 +609,10 @@
 
         function createRecognition() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            const rec = new SpeechRecognition();
-            rec.continuous = true; 
-            rec.interimResults = true;
-            rec.lang = languageSelect.value || 'en-US';
-
-            rec.onerror = (event) => {
-                console.error("Speech Recognition Error", event.error);
-                if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                    isRecording = false;
-                    transitionTo(AppState.IDLE);
-                    statusEl.textContent = "Mic Access Denied";
-                    alert("Microphone access denied. Please check your browser permissions.");
-                }
-            };
+            recognition = new SpeechRecognition();
+            recognition.continuous = true; // Ambient Requirement
+            recognition.interimResults = true;
+            recognition.lang = languageSelect.value || 'en-US';
 
             rec.onstart = () => {
                 isRecording = true;
@@ -675,7 +729,7 @@
                     type: "query", 
                     text: text,
                     language: languageSelect.value || 'en-US',
-                    source: "user" 
+                    source: "user" // 2. HARD AUDIO OWNERSHIP RULE
                 }));
             }
         }
