@@ -376,14 +376,14 @@
         let nextStartTime = 0; // Track when the next chunk should play
 
         // --- UI Elements ---
-        const statusEl = document.getElementById('status');
+        // const statusEl = document.getElementById('status'); // already declared above
         const orb = document.getElementById('orb');
-        const chatBox = document.getElementById('chatBox');
+        // chatBox already declared above; reuse existing reference
         const mainBtn = document.getElementById('mainBtn');
         const muteBtn = document.getElementById('muteBtn');
         const settingsPanel = document.getElementById('settingsPanel');
-        const ambientToggle = document.getElementById('ambientToggle');
-        const languageSelect = document.getElementById('languageSelect');
+        // ambientToggle already declared above, reuse it
+// languageSelect is already declared at the top; remove duplicate declaration
 
         // --- Initialization ---
         function ensureAudioContext() {
@@ -396,54 +396,25 @@
                  audioContext = new AudioContext({ sampleRate: 24000 });
             }
             if (audioContext.state === 'suspended') {
-                audioContext.resume();
+                audioContext.resume().then(() => {
+                    console.log("AudioContext resumed");
+                }).catch(e => console.error("AudioContext resume failed", e));
             }
         }
 
-        // UI Elements
-        const statusEl = document.getElementById('status');
-        const chatBox = document.getElementById('chatBox');
-        const startBtn = document.getElementById('startBtn');
-        const stopBtn = document.getElementById('stopBtn');
-        const ambientToggle = document.getElementById('ambientToggle');
-        const languageSelect = document.getElementById('languageSelect');
-
-        // Language Management
-        async function loadLanguages() {
-            try {
-                const response = await fetch('http://localhost:8000/languages');
-                const languages = await response.json();
-                
-                languageSelect.innerHTML = '';
-                let defaultLang = 'en-US';
-                
-                // Prioritize en-IN for Hinglish users if available, else en-US
-                if (languages['en-IN']) defaultLang = 'en-IN';
-                
-                for (const [key, lang] of Object.entries(languages)) {
-                    const option = document.createElement('option');
-                    option.value = lang.code;
-                    option.textContent = lang.name;
-                    if (lang.code === defaultLang) option.selected = true;
-                    languageSelect.appendChild(option);
-                }
-            } catch (e) {
-                console.error("Failed to load languages:", e);
+        // --- Interaction Handlers ---
+        function handleMainAction() {
+            ensureAudioContext();
+            if (currentState === AppState.IDLE) {
+                transitionTo(AppState.LISTENING);
+            } else if (currentState === AppState.LISTENING) {
+                transitionTo(AppState.IDLE);
+            } else if (currentState === AppState.SPEAKING) {
+                stopAudioPlayback();
+                if (ws) ws.send(JSON.stringify({ type: "stop" }));
+                transitionTo(AppState.IDLE);
             }
         }
-
-        function handleLanguageChange() {
-            console.log("Language changed to:", languageSelect.value);
-            // If currently recording, restart to apply new language
-            if (isRecording) {
-                stopMic();
-                startMic();
-            }
-        }
-
-        loadLanguages();
-
-        // State Management
         function transitionTo(newState) {
             console.log(`State Transition: ${currentState} -> ${newState}`);
             currentState = newState;
@@ -736,16 +707,29 @@
 
         // --- WebSocket ---
         function connectWebSocket() {
-            ws = new WebSocket(WS_URL);
-            ws.onopen = () => { statusEl.textContent = "Tap mic to start"; };
-            ws.onclose = () => { 
-                statusEl.textContent = "Disconnected"; 
-                setTimeout(connectWebSocket, 3000); 
-            };
-            ws.onerror = (err) => { statusEl.textContent = "Connection Error"; };
-            ws.onmessage = handleMessage;
+            console.log("Connecting to WebSocket:", WS_URL);
+            try {
+                ws = new WebSocket(WS_URL);
+                ws.onopen = () => { 
+                    console.log("WebSocket Connected");
+                    statusEl.textContent = "Tap mic to start"; 
+                };
+                ws.onclose = (e) => { 
+                    console.log("WebSocket Disconnected", e);
+                    statusEl.textContent = "Disconnected"; 
+                    setTimeout(connectWebSocket, 3000); 
+                };
+                ws.onerror = (err) => { 
+                    console.error("WebSocket Error", err);
+                    statusEl.textContent = "Connection Error"; 
+                };
+                ws.onmessage = handleMessage;
+            } catch (e) {
+                console.error("WebSocket Init Error", e);
+            }
         }
-        connectWebSocket();
+        // Delay connection slightly to ensure page load
+        setTimeout(connectWebSocket, 500);
 
         async function handleMessage(event) {
             const data = JSON.parse(event.data);
