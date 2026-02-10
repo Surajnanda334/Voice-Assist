@@ -35,8 +35,13 @@ def shutdown_event():
 
 @app.get("/")
 async def get():
-    with open("frontend.html", "r", encoding="utf-8") as f:
-        return HTMLResponse(content=f.read(), status_code=200)
+    # Use os.path to ensure correct file path in Docker/Cloud environment
+    import os
+    file_path = os.path.join(os.path.dirname(__file__), "frontend.html")
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), status_code=200)
+    return HTMLResponse(content="<h1>Error: Frontend file not found</h1>", status_code=404)
 
 @app.get("/languages")
 async def get_languages():
