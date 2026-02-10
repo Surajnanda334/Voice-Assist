@@ -5,6 +5,12 @@
         "tts_voice": "en-US-AriaNeural",
         "stt_code": "en-US"
     },
+    "en-IN": {
+        "name": "English (India) - Hinglish",
+        "code": "en-IN",
+        "tts_voice": "en-IN-NeerjaNeural",
+        "stt_code": "en-IN"
+    },
     "hi-IN": {
         "name": "Hindi",
         "code": "hi-IN",

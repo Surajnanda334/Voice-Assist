@@ -1,0 +1,67 @@
+import os
+import subprocess
+import json
+from abc import ABC, abstractmethod
+from typing import Optional
+from config import settings
+
+# --- STT Backend Abstraction ---
+class STTBackend(ABC):
+    @abstractmethod
+    async def transcribe(self, audio_data: bytes) -> str:
+        pass
+
+class WhisperCppBackend(STTBackend):
+    def __init__(self):
+        # Assuming whisper.cpp is in a 'whisper.cpp' subfolder in backend or similar
+        self.executable = os.path.join(os.getcwd(), "whisper.cpp", "main.exe") 
+        self.model_path = os.path.join(os.getcwd(), "whisper.cpp", "models", "ggml-base.en.bin")
+        
+        # Verify executable exists, else fallback or warn
+        if not os.path.exists(self.executable):
+            print(f"Warning: Whisper.cpp executable not found at {self.executable}")
+
+    async def transcribe(self, audio_data: bytes) -> str:
+        # Save audio to temporary wav file
+        # Whisper.cpp main expects a WAV file (16kHz, 16-bit)
+        # For now, just a placeholder implementation since handling binary data 
+        # via subprocess requires careful file management.
+        
+        # TODO: Implement actual WAV file writing and subprocess call
+        # This requires 'wave' module and ensuring input format is correct.
+        return "Whisper STT Placeholder: Transcription not implemented yet."
+
+class VoskBackend(STTBackend):
+    def __init__(self):
+        try:
+            from vosk import Model, KaldiRecognizer
+            self.model = Model("model") # Expects 'model' folder in CWD
+            self.recognizer_cls = KaldiRecognizer
+        except ImportError:
+            print("Vosk not installed or model missing.")
+            self.model = None
+
+    async def transcribe(self, audio_data: bytes) -> str:
+        if not self.model: return "Error: Vosk model not loaded."
+        # Placeholder for actual Vosk processing
+        return "Vosk STT Placeholder"
+
+# --- STT Service ---
+class STTService:
+    def __init__(self):
+        self.provider = settings.STT_PROVIDER
+        self.backend = self._get_backend()
+
+    def _get_backend(self) -> STTBackend:
+        if self.provider == "vosk":
+            print("Initializing STT Backend: Vosk")
+            return VoskBackend()
+        else:
+            print("Initializing STT Backend: Whisper.cpp")
+            return WhisperCppBackend()
+
+    async def transcribe_audio(self, audio_bytes: bytes) -> str:
+        if not audio_bytes: return ""
+        return await self.backend.transcribe(audio_bytes)
+
+stt_service = STTService()
