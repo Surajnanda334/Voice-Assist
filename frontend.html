@@ -580,24 +580,25 @@
 
         function createRecognition() {
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition = new SpeechRecognition();
-            recognition.continuous = true; // Ambient Requirement
-            recognition.interimResults = true;
-            recognition.lang = languageSelect.value || 'en-US';
+            if (!SpeechRecognition) {
+                alert("Speech Recognition API is not supported in this browser. Please use Chrome or Edge.");
+                return null;
+            }
+            const rec = new SpeechRecognition();
+            rec.continuous = true;
+            rec.interimResults = true;
+            rec.lang = languageSelect.value || 'en-US';
 
             rec.onstart = () => {
                 isRecording = true;
+                console.log("Recognition started");
             };
 
             rec.onend = () => {
                 isRecording = false;
-
-                // If Speaking, we expect the mic to be off (Echo Cancellation).
-                // Restarting will happen via audio playback end event.
+                console.log("Recognition ended");
                 if (currentState === AppState.SPEAKING) return;
-
                 if (!isMuted && isAmbientMode && (currentState === AppState.LISTENING || currentState === AppState.PROCESSING)) {
-                    // Slight delay to prevent tight loops if errors occur
                     setTimeout(() => {
                         if (currentState === AppState.LISTENING || currentState === AppState.PROCESSING) {
                              startMic();

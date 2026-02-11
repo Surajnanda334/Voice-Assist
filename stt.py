@@ -1,6 +1,7 @@
 import os
 import subprocess
 import json
+import httpx
 from abc import ABC, abstractmethod
 from typing import Optional
 from config import settings
@@ -10,6 +11,33 @@ class STTBackend(ABC):
     @abstractmethod
     async def transcribe(self, audio_data: bytes) -> str:
         pass
+
+class GroqSTTBackend(STTBackend):
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.url = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+    async def transcribe(self, audio_data: bytes) -> str:
+        if not self.api_key: return "Error: GROQ_API_KEY missing"
+        
+        # Groq expects a file-like object or tuple (filename, content, type)
+        files = {'file': ('audio.wav', audio_data, 'audio/wav')}
+        data = {
+            'model': 'distil-whisper-large-v3-en',
+            'response_format': 'json',
+            'temperature': 0.0
+        }
+        headers = {'Authorization': f'Bearer {self.api_key}'}
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.url, headers=headers, files=files, data=data, timeout=10.0)
+                if response.status_code == 200:
+                    return response.json().get('text', '')
+                else:
+                    return f"Groq STT Error: {response.text}"
+        except Exception as e:
+            return f"Groq STT Exception: {e}"
 
 class WhisperCppBackend(STTBackend):
     def __init__(self):
@@ -56,6 +84,9 @@ class STTService:
         if self.provider == "vosk":
             print("Initializing STT Backend: Vosk")
             return VoskBackend()
+        elif self.provider == "groq":
+            print("Initializing STT Backend: Groq (distil-whisper)")
+            return GroqSTTBackend(settings.GROQ_API_KEY)
         else:
             print("Initializing STT Backend: Whisper.cpp")
             return WhisperCppBackend()
